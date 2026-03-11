@@ -6,373 +6,459 @@ import {
   FileDown, 
   Box, 
   Square, 
-  HardHat, 
-  History,
-  AlertCircle
+  Ruler, 
+  Zap, 
+  ChevronRight,
+  MinusCircle,
+  PlusCircle,
+  Layers,
+  Terminal
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
-type CalculationMode = '3D' | '2D';
+type Mode = 'VOLUME' | 'LUAS' | 'METER_LARI';
 
-interface ConstructionItem {
+interface SubItem {
   id: string;
   nama: string;
-  mode: CalculationMode;
-  dimensi: {
-    p: number;
-    l: number;
-    t?: number;
-  };
+  p: number;
+  l: number;
+  t: number;
   jumlah: number;
-  hasil: number; // m3 for 3D, m2 for 2D
+  isVoid: boolean;
+  hasil: number;
 }
 
+type GroupedData = Record<Mode, Record<string, SubItem[]>>;
+
 export default function App() {
-  const [mode, setMode] = useState<CalculationMode>('3D');
-  const [items, setItems] = useState<ConstructionItem[]>([]);
-  
+  const [activeTab, setActiveTab] = useState<Mode>('VOLUME');
+  const [data, setData] = useState<GroupedData>({
+    VOLUME: {},
+    LUAS: {},
+    METER_LARI: {}
+  });
+
   // Form State
-  const [nama, setNama] = useState('');
+  const [judul, setJudul] = useState('');
+  const [subItem, setSubItem] = useState('');
   const [p, setP] = useState<number | string>('');
   const [l, setL] = useState<number | string>('');
   const [t, setT] = useState<number | string>('');
   const [jumlah, setJumlah] = useState<number | string>(1);
-
-  // Totals
-  const totals = useMemo(() => {
-    return items.reduce((acc, item) => {
-      if (item.mode === '3D') acc.volume += item.hasil;
-      else acc.luas += item.hasil;
-      return acc;
-    }, { volume: 0, luas: 0 });
-  }, [items]);
+  const [isVoid, setIsVoid] = useState(false);
 
   const handleAddItem = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!nama || !p || !l || (mode === '3D' && !t)) return;
+    if (!judul || !subItem || !p) return;
 
     const valP = Number(p);
-    const valL = Number(l);
-    const valT = mode === '3D' ? Number(t) : 0;
+    const valL = Number(l) || 0;
+    const valT = Number(t) || 0;
     const valJumlah = Number(jumlah) || 1;
 
     let hasil = 0;
-    if (mode === '3D') {
-      // cm to m3: (cm/100) * (cm/100) * (cm/100)
+    if (activeTab === 'VOLUME') {
       hasil = (valP / 100) * (valL / 100) * (valT / 100) * valJumlah;
-    } else {
-      // m to m2: m * m
-      hasil = valP * valL * valJumlah;
+    } else if (activeTab === 'LUAS') {
+      hasil = (valP / 100) * (valL / 100) * valJumlah;
+      if (isVoid) hasil *= -1;
+    } else if (activeTab === 'METER_LARI') {
+      hasil = (valP / 100) * valJumlah;
     }
 
-    const newItem: ConstructionItem = {
+    const newItem: SubItem = {
       id: crypto.randomUUID(),
-      nama,
-      mode,
-      dimensi: { p: valP, l: valL, t: mode === '3D' ? valT : undefined },
+      nama: subItem,
+      p: valP,
+      l: valL,
+      t: valT,
       jumlah: valJumlah,
+      isVoid: activeTab === 'LUAS' ? isVoid : false,
       hasil
     };
 
-    setItems([newItem, ...items]);
-    
-    // Reset Form
-    setNama('');
+    setData(prev => {
+      const currentModeData = { ...prev[activeTab] };
+      if (!currentModeData[judul]) {
+        currentModeData[judul] = [];
+      }
+      currentModeData[judul] = [newItem, ...currentModeData[judul]];
+      return { ...prev, [activeTab]: currentModeData };
+    });
+
+    setSubItem('');
     setP('');
     setL('');
     setT('');
     setJumlah(1);
+    setIsVoid(false);
   };
 
-  const removeItem = (id: string) => {
-    setItems(items.filter(item => item.id !== id));
+  const removeItem = (mode: Mode, groupTitle: string, id: string) => {
+    setData(prev => {
+      const currentModeData = { ...prev[mode] };
+      currentModeData[groupTitle] = currentModeData[groupTitle].filter(item => item.id !== id);
+      if (currentModeData[groupTitle].length === 0) {
+        delete currentModeData[groupTitle];
+      }
+      return { ...prev, [mode]: currentModeData };
+    });
+  };
+
+  const calculateGroupTotal = (items: SubItem[]) => {
+    return items.reduce((sum, item) => sum + item.hasil, 0);
+  };
+
+  const calculateTabTotal = (mode: Mode): number => {
+    const groups = data[mode];
+    return (Object.values(groups) as SubItem[][]).reduce((sum: number, items) => sum + calculateGroupTotal(items), 0);
   };
 
   const exportPDF = () => {
     const doc = new jsPDF();
     const date = new Date().toLocaleDateString('id-ID', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
+      year: 'numeric', month: 'long', day: 'numeric'
     });
 
-    // Header
-    doc.setFontSize(20);
-    doc.setTextColor(15, 23, 42); // slate-900
-    doc.text('Smart Construction Report', 14, 22);
-    
+    doc.setFontSize(22);
+    doc.text('RENOVKI DIMENSION REPORT', 14, 20);
     doc.setFontSize(10);
-    doc.setTextColor(100);
-    doc.text(`Tanggal: ${date}`, 14, 30);
-    doc.text('Laporan Estimasi Material Konstruksi', 14, 35);
+    doc.text(`Tanggal: ${date}`, 14, 28);
 
-    // Table
-    const tableData = items.map((item, index) => [
-      index + 1,
-      item.nama,
-      item.mode === '3D' ? 'Volume (3D)' : 'Luas (2D)',
-      item.mode === '3D' 
-        ? `${item.dimensi.p}x${item.dimensi.l}x${item.dimensi.t} cm`
-        : `${item.dimensi.p}x${item.dimensi.l} m`,
-      item.jumlah,
-      item.hasil.toFixed(3) + (item.mode === '3D' ? ' m³' : ' m²')
-    ]);
+    let currentY = 35;
 
-    autoTable(doc, {
-      startY: 45,
-      head: [['No', 'Nama Item', 'Mode', 'Dimensi', 'Jumlah', 'Hasil']],
-      body: tableData,
-      headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255] },
-      alternateRowStyles: { fillColor: [248, 250, 252] },
+    (['VOLUME', 'LUAS', 'METER_LARI'] as Mode[]).forEach(mode => {
+      const groups = data[mode];
+      if (Object.keys(groups).length === 0) return;
+
+      doc.setFontSize(16);
+      doc.text(`KATEGORI: ${mode}`, 14, currentY);
+      currentY += 10;
+
+      Object.entries(groups).forEach(([title, items]) => {
+        const subItems = items as SubItem[];
+        doc.setFontSize(12);
+        doc.text(`Pekerjaan: ${title}`, 14, currentY);
+        currentY += 5;
+
+        const tableData = subItems.map((item, idx) => [
+          idx + 1,
+          item.nama + (item.isVoid ? ' (VOID)' : ''),
+          `${item.p}${item.l ? 'x'+item.l : ''}${item.t ? 'x'+item.t : ''} cm`,
+          item.jumlah,
+          item.hasil.toFixed(3) + (mode === 'VOLUME' ? ' m3' : mode === 'LUAS' ? ' m2' : ' m1')
+        ]);
+
+        autoTable(doc, {
+          startY: currentY,
+          head: [['No', 'Sub-Item', 'Dimensi', 'Jumlah', 'Hasil']],
+          body: tableData,
+          theme: 'grid',
+          headStyles: { fillColor: [0, 0, 0], textColor: [255, 255, 255] },
+          margin: { left: 14 },
+          didDrawPage: (data) => {
+            currentY = data.cursor?.y || currentY;
+          }
+        });
+
+        currentY = (doc as any).lastAutoTable.finalY + 10;
+        doc.setFontSize(10);
+        doc.text(`Sub-Total ${title}: ${calculateGroupTotal(subItems).toFixed(3)} ${mode === 'VOLUME' ? 'm3' : mode === 'LUAS' ? 'm2' : 'm1'}`, 14, currentY - 5);
+
+        if (currentY > 250) {
+          doc.addPage();
+          currentY = 20;
+        }
+      });
+
+      doc.setFontSize(12);
+      doc.text(`TOTAL KESELURUHAN ${mode}: ${(calculateTabTotal(mode) as number).toFixed(3)} ${mode === 'VOLUME' ? 'm3' : mode === 'LUAS' ? 'm2' : 'm1'}`, 14, currentY);
+      currentY += 20;
+
+      if (currentY > 250) {
+        doc.addPage();
+        currentY = 20;
+      }
     });
 
-    // Totals
-    const finalY = (doc as any).lastAutoTable.finalY + 10;
-    doc.setFontSize(12);
-    doc.setTextColor(15, 23, 42);
-    doc.text(`Total Volume Keseluruhan: ${totals.volume.toFixed(3)} m³`, 14, finalY);
-    doc.text(`Total Luas Keseluruhan: ${totals.luas.toFixed(3)} m²`, 14, finalY + 7);
-
-    doc.save(`Construction_Report_${Date.now()}.pdf`);
+    doc.save(`RenovkiDimension_Report_${Date.now()}.pdf`);
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-900 pb-20">
-      {/* Navbar */}
-      <nav className="bg-slate-900 text-white p-4 sticky top-0 z-50 shadow-lg">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-blue-500 p-2 rounded-lg">
-              <HardHat size={20} />
-            </div>
-            <h1 className="text-xl font-bold tracking-tight">Smart Construction Calculator</h1>
-          </div>
-          <button 
-            onClick={exportPDF}
-            disabled={items.length === 0}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm font-semibold transition-all shadow-md"
-          >
-            <FileDown size={18} />
-            <span className="hidden sm:inline">Download PDF Report</span>
-          </button>
-        </div>
-      </nav>
+    <div className="min-h-screen bg-[#FFFFFF] text-[#333333] font-sans selection:bg-[#CCFF00] selection:text-black relative overflow-x-hidden">
+      {/* Top Neon Accent Stripe */}
+      <div className="h-1 w-full bg-[#CCFF00] fixed top-0 z-50" />
+      
+      {/* Subtle Anime Background Element - Minimalist Line Art */}
+      <div className="fixed bottom-0 right-0 w-[30vw] h-[50vh] pointer-events-none opacity-[0.04] z-0 flex items-end justify-end p-12">
+        <svg viewBox="0 0 100 100" className="w-full h-full text-black fill-current">
+          <path d="M50 10 C30 10 10 30 10 50 C10 70 30 90 50 90 C70 90 90 70 90 50 C90 30 70 10 50 10 Z M50 20 C65 20 78 32 80 47 C75 45 70 45 65 47 C60 40 50 35 40 38 C35 35 30 35 25 38 C22 32 35 20 50 20 Z" />
+        </svg>
+      </div>
 
-      <main className="max-w-6xl mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+      {/* Header */}
+      <header className="p-4 md:p-6 max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4 relative z-10">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 bg-[#CCFF00] rounded-none flex items-center justify-center relative">
+            <Terminal size={20} className="text-black" />
+            <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-none border border-white" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-extrabold tracking-tight text-[#333333] flex items-center gap-2">
+              RENOVKI DIMENSION
+            </h1>
+          </div>
+        </div>
+        <button 
+          onClick={exportPDF} 
+          className="japandi-button bg-[#333333] text-white hover:bg-black flex items-center gap-3 border border-[#CCFF00]/50"
+        >
+          <FileDown size={18} />
+          Export Report
+        </button>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 md:px-6 pb-12 grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
         
         {/* Left Column: Form */}
         <div className="lg:col-span-5 space-y-6">
-          <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-            <div className="p-6 border-b border-slate-100 bg-slate-50/50">
-              <h2 className="font-bold text-slate-800 flex items-center gap-2">
-                <Calculator size={18} className="text-blue-600" />
-                Input Item Baru
-              </h2>
+          <section className="japandi-card-neon p-6">
+            <div className="flex items-center gap-2 mb-6">
+              <div className="w-1 h-6 bg-[#CCFF00] rounded-none" />
+              <h2 className="text-lg font-bold tracking-tight">Input Parameters</h2>
             </div>
-            
-            <div className="p-6">
-              {/* Mode Toggle */}
-              <div className="flex p-1 bg-slate-100 rounded-xl mb-6">
+
+            {/* Tabs */}
+            <div className="flex bg-[#F8F9FA] p-1 rounded-none mb-6">
+              {(['VOLUME', 'LUAS', 'METER_LARI'] as Mode[]).map((m) => (
                 <button 
-                  onClick={() => setMode('3D')}
-                  className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-bold transition-all ${mode === '3D' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                  key={m}
+                  onClick={() => setActiveTab(m)}
+                  className={`flex-1 py-2 rounded-none text-[10px] font-bold tracking-wider transition-all ${activeTab === m ? 'bg-[#CCFF00] text-black' : 'text-black/30 hover:text-black/50'}`}
                 >
-                  <Box size={16} />
-                  Mode Volume (3D)
+                  {m === 'VOLUME' && 'VOLUME'}
+                  {m === 'LUAS' && 'AREA'}
+                  {m === 'METER_LARI' && 'LINEAR'}
                 </button>
-                <button 
-                  onClick={() => setMode('2D')}
-                  className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-bold transition-all ${mode === '2D' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                  <Square size={16} />
-                  Mode Luas (2D)
-                </button>
+              ))}
+            </div>
+
+            <form onSubmit={handleAddItem} className="space-y-6">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-black/40 uppercase tracking-wider ml-1">Job Title</label>
+                <input 
+                  required
+                  type="text" 
+                  value={judul}
+                  onChange={(e) => setJudul(e.target.value)}
+                  placeholder="e.g. Living Room Floor"
+                  className="japandi-input"
+                />
               </div>
 
-              <form onSubmit={handleAddItem} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-black/40 uppercase tracking-wider ml-1">Sub-Item Name</label>
+                <input 
+                  required
+                  type="text" 
+                  value={subItem}
+                  onChange={(e) => setSubItem(e.target.value)}
+                  placeholder="e.g. Main Area"
+                  className="japandi-input"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Nama Item</label>
+                  <label className="text-[10px] font-bold text-black/40 uppercase tracking-wider ml-1">Length (cm)</label>
                   <input 
                     required
-                    type="text" 
-                    value={nama}
-                    onChange={(e) => setNama(e.target.value)}
-                    placeholder="Contoh: Balok Kamar A"
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                    type="number" 
+                    step="any"
+                    value={p}
+                    onChange={(e) => setP(e.target.value)}
+                    className="japandi-input"
                   />
                 </div>
-
-                <div className="grid grid-cols-2 gap-4">
+                {activeTab !== 'METER_LARI' && (
                   <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                      Lebar ({mode === '3D' ? 'cm' : 'm'})
-                    </label>
-                    <input 
-                      required
-                      type="number" 
-                      step="any"
-                      value={p}
-                      onChange={(e) => setP(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                      {mode === '3D' ? 'Panjang (cm)' : 'Panjang/Tinggi (m)'}
-                    </label>
+                    <label className="text-[10px] font-bold text-black/40 uppercase tracking-wider ml-1">Width (cm)</label>
                     <input 
                       required
                       type="number" 
                       step="any"
                       value={l}
                       onChange={(e) => setL(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                      className="japandi-input"
                     />
                   </div>
-                </div>
+                )}
+              </div>
 
-                {mode === '3D' && (
+              <div className="grid grid-cols-2 gap-4">
+                {activeTab === 'VOLUME' && (
                   <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Tinggi (cm)</label>
+                    <label className="text-[10px] font-bold text-black/40 uppercase tracking-wider ml-1">Height (cm)</label>
                     <input 
                       required
                       type="number" 
                       step="any"
                       value={t}
                       onChange={(e) => setT(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                      className="japandi-input"
                     />
                   </div>
                 )}
-
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Jumlah (pcs)</label>
+                  <label className="text-[10px] font-bold text-black/40 uppercase tracking-wider ml-1">Quantity</label>
                   <input 
                     required
                     type="number" 
                     value={jumlah}
                     onChange={(e) => setJumlah(e.target.value)}
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                    className="japandi-input"
                   />
                 </div>
+              </div>
 
-                <button 
-                  type="submit"
-                  className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-slate-800 transition-all active:scale-[0.98] shadow-lg shadow-slate-200"
+              {activeTab === 'LUAS' && (
+                <div 
+                  onClick={() => setIsVoid(!isVoid)}
+                  className={`p-4 rounded-none cursor-pointer transition-all flex items-center justify-between ${isVoid ? 'bg-red-50' : 'bg-[#F8F9FA] hover:bg-black/5'}`}
                 >
-                  <Plus size={20} />
-                  Tambah ke Daftar
-                </button>
-              </form>
-            </div>
+                  <div className="flex items-center gap-3">
+                    <div className={`w-8 h-8 rounded-none flex items-center justify-center ${isVoid ? 'bg-red-500 text-white' : 'bg-[#CCFF00] text-black'}`}>
+                      {isVoid ? <MinusCircle size={16} /> : <PlusCircle size={16} />}
+                    </div>
+                    <div>
+                      <p className={`text-[11px] font-bold ${isVoid ? 'text-red-600' : 'text-black'}`}>Void / Deduction</p>
+                      <p className="text-[9px] text-black/30 font-medium">Subtract from total area</p>
+                    </div>
+                  </div>
+                  <div className={`w-4 h-4 rounded-none border transition-all flex items-center justify-center ${isVoid ? 'border-red-500 bg-red-500' : 'border-black/10'}`}>
+                    {isVoid && <div className="w-1.5 h-1.5 bg-white rounded-none" />}
+                  </div>
+                </div>
+              )}
+
+              <button type="submit" className="japandi-button w-full py-3 bg-[#CCFF00] text-black hover:bg-[#b8e600]">
+                Add to Registry
+              </button>
+            </form>
           </section>
 
-          {/* Totals Display */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Volume</p>
-              <div className="flex items-baseline gap-1">
-                <span className="text-2xl font-black text-slate-900">{totals.volume.toFixed(3)}</span>
-                <span className="text-xs font-bold text-slate-500">m³</span>
-              </div>
-            </div>
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Luas</p>
-              <div className="flex items-baseline gap-1">
-                <span className="text-2xl font-black text-slate-900">{totals.luas.toFixed(3)}</span>
-                <span className="text-xs font-bold text-slate-500">m²</span>
-              </div>
+          {/* Tab Total Display */}
+          <div className="japandi-card p-6 bg-[#333333] text-white">
+            <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-2">Total {activeTab} Accumulation</p>
+            <div className="flex items-baseline gap-2">
+              <span className="text-4xl font-extrabold tracking-tighter text-[#CCFF00]">
+                {calculateTabTotal(activeTab).toFixed(3)}
+              </span>
+              <span className="text-sm font-bold text-white/50 italic">
+                {activeTab === 'VOLUME' ? 'm³' : activeTab === 'LUAS' ? 'm²' : 'm¹'}
+              </span>
             </div>
           </div>
         </div>
 
         {/* Right Column: List */}
         <div className="lg:col-span-7 space-y-6">
-          <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden min-h-[400px]">
-            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-              <h2 className="font-bold text-slate-800 flex items-center gap-2">
-                <History size={18} className="text-blue-600" />
-                Daftar Item
-              </h2>
-              <span className="text-xs font-bold bg-slate-200 text-slate-600 px-2 py-1 rounded-md">
-                {items.length} Item
-              </span>
+          <section className="japandi-card min-h-[600px] flex flex-col overflow-hidden">
+            <div className="p-6 border-b border-black/5 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-[#F8F9FA] rounded-none flex items-center justify-center">
+                  <Layers size={16} className="text-black/40" />
+                </div>
+                <h2 className="text-lg font-bold tracking-tight">Registry Database</h2>
+              </div>
+              <div className="px-3 py-1 bg-[#F8F9FA] rounded-none text-[10px] font-bold text-black/40 border border-black/5">
+                {Object.keys(data[activeTab]).length} Active Groups
+              </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  <tr>
-                    <th className="px-6 py-4">Item</th>
-                    <th className="px-6 py-4">Dimensi</th>
-                    <th className="px-6 py-4">Hasil</th>
-                    <th className="px-6 py-4 text-center">Aksi</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  <AnimatePresence initial={false}>
-                    {items.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="px-6 py-20 text-center">
-                          <div className="flex flex-col items-center gap-3 text-slate-400">
-                            <AlertCircle size={40} strokeWidth={1.5} />
-                            <p className="text-sm font-medium">Belum ada item yang ditambahkan.</p>
+            <div className="flex-1 overflow-y-auto p-6 space-y-8">
+              <AnimatePresence initial={false}>
+                {Object.keys(data[activeTab]).length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-black/10 py-20">
+                    <div className="w-16 h-16 bg-[#F8F9FA] rounded-none flex items-center justify-center mb-6 border border-black/5">
+                      <Terminal size={32} strokeWidth={1.5} />
+                    </div>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.4em]">No entries found</p>
+                  </div>
+                ) : (
+                  Object.entries(data[activeTab]).map(([title, items]) => {
+                    const subItems = items as SubItem[];
+                    return (
+                      <motion.div 
+                        key={title}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.98 }}
+                        className="group"
+                      >
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-1 h-4 bg-[#CCFF00] rounded-none" />
+                            <h3 className="text-sm font-bold tracking-tight">{title}</h3>
                           </div>
-                        </td>
-                      </tr>
-                    ) : (
-                      items.map((item) => (
-                        <motion.tr 
-                          key={item.id}
-                          initial={{ opacity: 0, x: -20 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, x: 20 }}
-                          className="hover:bg-slate-50/50 transition-colors group"
-                        >
-                          <td className="px-6 py-4">
-                            <div className="font-bold text-slate-800">{item.nama}</div>
-                            <div className="text-[10px] text-slate-400 flex items-center gap-1">
-                              {item.mode === '3D' ? <Box size={10} /> : <Square size={10} />}
-                              {item.mode === '3D' ? 'Volume' : 'Luas'} • {item.jumlah} pcs
+                          <div className="text-[10px] font-bold text-black/30">
+                            Group Total: <span className="text-black ml-1">{calculateGroupTotal(subItems).toFixed(3)}</span>
+                          </div>
+                        </div>
+                        
+                        <div className="space-y-2">
+                          {subItems.map((item) => (
+                            <div key={item.id} className="bg-[#F8F9FA] p-4 rounded-none flex items-center justify-between hover:bg-white transition-all border border-transparent hover:border-[#CCFF00]/40">
+                              <div className="flex items-center gap-4">
+                                <div className={`w-8 h-8 rounded-none flex items-center justify-center ${item.isVoid ? 'bg-red-100 text-red-500' : 'bg-white text-black/20 border border-black/5'}`}>
+                                  {item.isVoid ? <MinusCircle size={16} /> : <Box size={16} />}
+                                </div>
+                                <div>
+                                  <p className={`text-xs font-bold ${item.isVoid ? 'text-red-600' : 'text-black'}`}>
+                                    {item.nama}
+                                    {item.isVoid && <span className="ml-2 text-[8px] bg-red-500 text-white px-1.5 py-0.5 rounded-none font-black uppercase">Void</span>}
+                                  </p>
+                                  <p className="text-[9px] text-black/30 font-medium mt-0.5">
+                                    {item.jumlah} Units • {item.p}{item.l ? 'x'+item.l : ''}{item.t ? 'x'+item.t : ''} cm
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-6">
+                                <div className="text-right">
+                                  <p className={`text-xs font-bold ${item.isVoid ? 'text-red-600' : 'text-black'}`}>
+                                    {item.hasil.toFixed(3)}
+                                    <span className="text-[9px] ml-1 text-black/30 uppercase">
+                                      {activeTab === 'VOLUME' ? 'm³' : activeTab === 'LUAS' ? 'm²' : 'm¹'}
+                                    </span>
+                                  </p>
+                                </div>
+                                <button 
+                                  onClick={() => removeItem(activeTab, title, item.id)}
+                                  className="w-8 h-8 rounded-none flex items-center justify-center text-black/10 hover:text-red-500 hover:bg-red-50 transition-all border border-transparent hover:border-red-100"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
                             </div>
-                          </td>
-                          <td className="px-6 py-4 text-sm font-mono text-slate-500">
-                            {item.mode === '3D' 
-                              ? `${item.dimensi.p}x${item.dimensi.l}x${item.dimensi.t}`
-                              : `${item.dimensi.p}x${item.dimensi.l}`}
-                            <span className="text-[10px] ml-1">{item.mode === '3D' ? 'cm' : 'm'}</span>
-                          </td>
-                          <td className="px-6 py-4">
-                            <div className="font-black text-slate-900">
-                              {item.hasil.toFixed(3)}
-                              <span className="text-[10px] ml-1 font-bold text-slate-400">
-                                {item.mode === '3D' ? 'm³' : 'm²'}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-6 py-4 text-center">
-                            <button 
-                              onClick={() => removeItem(item.id)}
-                              className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                            >
-                              <Trash2 size={18} />
-                            </button>
-                          </td>
-                        </motion.tr>
-                      ))
-                    )}
-                  </AnimatePresence>
-                </tbody>
-              </table>
+                          ))}
+                        </div>
+                      </motion.div>
+                    );
+                  })
+                )}
+              </AnimatePresence>
             </div>
           </section>
         </div>
       </main>
 
-      <footer className="max-w-6xl mx-auto px-4 text-center text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-8">
-        Smart Construction Calculator • Professional Quantity Surveying Tool
+      <footer className="max-w-7xl mx-auto p-8 text-center border-t border-[#CCFF00] mt-8">
+        <p className="text-[9px] font-bold text-black/10 uppercase tracking-[1.5em]">
+          RENOVKI DIMENSION
+        </p>
       </footer>
     </div>
   );

@@ -1,1 +1,39 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;800&display=swap');
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --color-japandi-bg: #FFFFFF;
+  --color-japandi-text: #333333;
+  --color-soft-lime: #CCFF00;
+  --color-soft-gray: #F8F9FA;
+}
+
+@layer base {
+  body {
+    @apply bg-japandi-bg text-japandi-text font-sans antialiased;
+  }
+}
+
+.japandi-card {
+  @apply bg-white border border-black/10 rounded-none shadow-none transition-all duration-300 relative overflow-hidden;
+}
+
+.japandi-card-neon {
+  @apply bg-white border-2 border-soft-lime rounded-none shadow-none transition-all duration-300 relative overflow-hidden;
+}
+
+.japandi-button {
+  @apply px-4 py-2 rounded-none font-bold text-xs tracking-tight transition-all duration-300 active:scale-95;
+}
+
+.japandi-input {
+  @apply w-full bg-soft-gray border border-black/5 rounded-none p-3 text-japandi-text placeholder:text-black/20 outline-none focus:ring-1 focus:ring-soft-lime transition-all text-sm;
+}
+
+.anime-silhouette {
+  mask-image: url('https://raw.githubusercontent.com/gist/febrianamanahputra/anime-silhouette.svg'); /* Placeholder or CSS shape */
+  mask-repeat: no-repeat;
+  mask-position: bottom right;
+  opacity: 0.05;
+}
