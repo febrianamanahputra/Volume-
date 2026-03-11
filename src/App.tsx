@@ -29,20 +29,31 @@ interface SubItem {
   jumlah: number;
   isVoid: boolean;
   hasil: number;
+  showSubItem: boolean;
 }
 
 type GroupedData = Record<Mode, Record<string, SubItem[]>>;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Mode>('VOLUME');
-  const [data, setData] = useState<GroupedData>({
-    VOLUME: {},
-    LUAS: {},
-    METER_LARI: {}
+  const [wasteFactor, setWasteFactor] = useState<number>(0);
+  const [data, setData] = useState<GroupedData>(() => {
+    const saved = localStorage.getItem('neon_calc_data');
+    return saved ? JSON.parse(saved) : {
+      VOLUME: {},
+      LUAS: {},
+      METER_LARI: {}
+    };
   });
+
+  // Auto-save to LocalStorage
+  React.useEffect(() => {
+    localStorage.setItem('neon_calc_data', JSON.stringify(data));
+  }, [data]);
 
   // Form State
   const [judul, setJudul] = useState('');
+  const [useSubItem, setUseSubItem] = useState(false);
   const [subItem, setSubItem] = useState('');
   const [p, setP] = useState<number | string>('');
   const [l, setL] = useState<number | string>('');
@@ -52,7 +63,7 @@ export default function App() {
 
   const handleAddItem = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!judul || !subItem || !p) return;
+    if (!judul || (useSubItem && !subItem) || !p) return;
 
     const valP = Number(p);
     const valL = Number(l) || 0;
@@ -71,13 +82,14 @@ export default function App() {
 
     const newItem: SubItem = {
       id: crypto.randomUUID(),
-      nama: subItem,
+      nama: useSubItem ? subItem : '',
       p: valP,
       l: valL,
       t: valT,
       jumlah: valJumlah,
       isVoid: activeTab === 'LUAS' ? isVoid : false,
-      hasil
+      hasil,
+      showSubItem: useSubItem
     };
 
     setData(prev => {
@@ -109,12 +121,16 @@ export default function App() {
   };
 
   const calculateGroupTotal = (items: SubItem[]) => {
-    return items.reduce((sum, item) => sum + item.hasil, 0);
+    const sum = items.reduce((sum, item) => sum + item.hasil, 0);
+    return sum * (1 + wasteFactor / 100);
   };
 
   const calculateTabTotal = (mode: Mode): number => {
     const groups = data[mode];
-    return (Object.values(groups) as SubItem[][]).reduce((sum: number, items) => sum + calculateGroupTotal(items), 0);
+    const rawTotal = (Object.values(groups) as SubItem[][]).reduce((sum: number, items) => {
+      return sum + items.reduce((s, i) => s + i.hasil, 0);
+    }, 0);
+    return rawTotal * (1 + wasteFactor / 100);
   };
 
   const exportPDF = () => {
@@ -123,10 +139,11 @@ export default function App() {
       year: 'numeric', month: 'long', day: 'numeric'
     });
 
-    doc.setFontSize(22);
-    doc.text('RENOVKI DIMENSION REPORT', 14, 20);
-    doc.setFontSize(10);
-    doc.text(`Tanggal: ${date}`, 14, 28);
+    doc.setFontSize(18);
+    doc.text('NEON-CALC CONSTRUCTION V4 - REPORT', 14, 20);
+    doc.setFontSize(9);
+    doc.text(`Tanggal: ${date} | Waste Factor: ${wasteFactor}%`, 14, 26);
+    doc.line(14, 28, 196, 28);
 
     let currentY = 35;
 
@@ -134,63 +151,77 @@ export default function App() {
       const groups = data[mode];
       if (Object.keys(groups).length === 0) return;
 
-      doc.setFontSize(16);
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
       doc.text(`KATEGORI: ${mode}`, 14, currentY);
-      currentY += 10;
+      currentY += 8;
 
       Object.entries(groups).forEach(([title, items]) => {
         const subItems = items as SubItem[];
-        doc.setFontSize(12);
+        doc.setFontSize(11);
+        doc.setFont('helvetica', 'normal');
         doc.text(`Pekerjaan: ${title}`, 14, currentY);
-        currentY += 5;
+        currentY += 4;
 
         const tableData = subItems.map((item, idx) => [
           idx + 1,
-          item.nama + (item.isVoid ? ' (VOID)' : ''),
+          (item.showSubItem ? `${title} - ${item.nama}` : title) + (item.isVoid ? ' (VOID)' : ''),
           `${item.p}${item.l ? 'x'+item.l : ''}${item.t ? 'x'+item.t : ''} cm`,
           item.jumlah,
-          item.hasil.toFixed(3) + (mode === 'VOLUME' ? ' m3' : mode === 'LUAS' ? ' m2' : ' m1')
+          item.hasil.toFixed(2)
         ]);
 
         autoTable(doc, {
           startY: currentY,
-          head: [['No', 'Sub-Item', 'Dimensi', 'Jumlah', 'Hasil']],
+          head: [['No', 'Sub-Item', 'Dimensi (cm)', 'Qty', 'Hasil (m)']],
           body: tableData,
           theme: 'grid',
-          headStyles: { fillColor: [0, 0, 0], textColor: [255, 255, 255] },
+          headStyles: { fillColor: [40, 40, 40], textColor: [255, 255, 255], lineWidth: 0.1 },
+          styles: { fontSize: 8, cellPadding: 2 },
           margin: { left: 14 },
           didDrawPage: (data) => {
             currentY = data.cursor?.y || currentY;
           }
         });
 
-        currentY = (doc as any).lastAutoTable.finalY + 10;
-        doc.setFontSize(10);
-        doc.text(`Sub-Total ${title}: ${calculateGroupTotal(subItems).toFixed(3)} ${mode === 'VOLUME' ? 'm3' : mode === 'LUAS' ? 'm2' : 'm1'}`, 14, currentY - 5);
+        currentY = (doc as any).lastAutoTable.finalY + 8;
+        const groupTotal = calculateGroupTotal(subItems);
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.text(`Sub-Total ${title} (+${wasteFactor}% Waste): ${groupTotal.toFixed(2)} ${mode === 'VOLUME' ? 'm3' : mode === 'LUAS' ? 'm2' : 'm1'}`, 14, currentY - 3);
 
-        if (currentY > 250) {
+        if (currentY > 260) {
           doc.addPage();
           currentY = 20;
         }
       });
 
-      doc.setFontSize(12);
-      doc.text(`TOTAL KESELURUHAN ${mode}: ${(calculateTabTotal(mode) as number).toFixed(3)} ${mode === 'VOLUME' ? 'm3' : mode === 'LUAS' ? 'm2' : 'm1'}`, 14, currentY);
+      const tabTotal = calculateTabTotal(mode);
+      doc.setFontSize(10);
+      doc.text(`TOTAL AKUMULASI ${mode}: ${tabTotal.toFixed(2)} ${mode === 'VOLUME' ? 'm3' : mode === 'LUAS' ? 'm2' : 'm1'}`, 14, currentY + 5);
       currentY += 20;
 
-      if (currentY > 250) {
+      if (currentY > 260) {
         doc.addPage();
         currentY = 20;
       }
     });
 
-    doc.save(`RenovkiDimension_Report_${Date.now()}.pdf`);
+    doc.save(`NeonCalc_V2_Report_${Date.now()}.pdf`);
   };
 
   return (
-    <div className="min-h-screen bg-[#FFFFFF] text-[#333333] font-sans selection:bg-[#CCFF00] selection:text-black relative overflow-x-hidden">
+    <div className="min-h-screen bg-[#FFFFFF] text-[#333333] font-sans selection:bg-[#A3FF33] selection:text-black relative overflow-x-hidden">
+      {/* HUD Decorations */}
+      <div className="hud-line w-24 h-[1px] top-4 left-4" />
+      <div className="hud-line w-[1px] h-24 top-4 left-4" />
+      <div className="hud-line w-24 h-[1px] bottom-4 right-4" />
+      <div className="hud-line w-[1px] h-24 bottom-4 right-4" />
+      <div className="hud-line w-12 h-[1px] top-8 left-4 opacity-50" />
+      <div className="hud-line w-[1px] h-12 top-4 left-8 opacity-50" />
+
       {/* Top Neon Accent Stripe */}
-      <div className="h-1 w-full bg-[#CCFF00] fixed top-0 z-50" />
+      <div className="h-1 w-full bg-[#A3FF33] fixed top-0 z-50" />
       
       {/* Subtle Anime Background Element - Minimalist Line Art */}
       <div className="fixed bottom-0 right-0 w-[30vw] h-[50vh] pointer-events-none opacity-[0.04] z-0 flex items-end justify-end p-12">
@@ -202,23 +233,36 @@ export default function App() {
       {/* Header */}
       <header className="p-4 md:p-6 max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4 relative z-10">
         <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-[#CCFF00] rounded-none flex items-center justify-center relative">
+          <div className="w-10 h-10 bg-[#A3FF33] rounded-none flex items-center justify-center relative">
             <Terminal size={20} className="text-black" />
             <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-none border border-white" />
           </div>
           <div>
             <h1 className="text-2xl font-extrabold tracking-tight text-[#333333] flex items-center gap-2">
-              RENOVKI DIMENSION
+              NEON-CALC <span className="text-[#A3FF33] bg-black px-2 py-0.5">V4</span>
             </h1>
           </div>
         </div>
-        <button 
-          onClick={exportPDF} 
-          className="japandi-button bg-[#333333] text-white hover:bg-black flex items-center gap-3 border border-[#CCFF00]/50"
-        >
-          <FileDown size={18} />
-          Export Report
-        </button>
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={() => {
+              if(confirm('Hapus semua data?')) {
+                setData({ VOLUME: {}, LUAS: {}, METER_LARI: {} });
+                localStorage.removeItem('neon_calc_data');
+              }
+            }}
+            className="japandi-button bg-red-50 text-red-600 hover:bg-red-100 border border-red-200"
+          >
+            Reset
+          </button>
+          <button 
+            onClick={exportPDF} 
+            className="japandi-button bg-[#333333] text-white hover:bg-black flex items-center gap-3 border border-[#A3FF33]/50"
+          >
+            <FileDown size={18} />
+            Download PDF
+          </button>
+        </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 md:px-6 pb-12 grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
@@ -227,7 +271,7 @@ export default function App() {
         <div className="lg:col-span-5 space-y-6">
           <section className="japandi-card-neon p-6">
             <div className="flex items-center gap-2 mb-6">
-              <div className="w-1 h-6 bg-[#CCFF00] rounded-none" />
+              <div className="w-1 h-6 bg-[#A3FF33] rounded-none" />
               <h2 className="text-lg font-bold tracking-tight">Input Parameters</h2>
             </div>
 
@@ -237,7 +281,7 @@ export default function App() {
                 <button 
                   key={m}
                   onClick={() => setActiveTab(m)}
-                  className={`flex-1 py-2 rounded-none text-[10px] font-bold tracking-wider transition-all ${activeTab === m ? 'bg-[#CCFF00] text-black' : 'text-black/30 hover:text-black/50'}`}
+                  className={`flex-1 py-2 rounded-none text-[10px] font-bold tracking-wider transition-all ${activeTab === m ? 'bg-[#A3FF33] text-black' : 'text-black/30 hover:text-black/50'}`}
                 >
                   {m === 'VOLUME' && 'VOLUME'}
                   {m === 'LUAS' && 'AREA'}
@@ -248,27 +292,45 @@ export default function App() {
 
             <form onSubmit={handleAddItem} className="space-y-6">
               <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-black/40 uppercase tracking-wider ml-1">Job Title</label>
+                <label className="text-[10px] font-bold text-black/40 uppercase tracking-wider ml-1">Nama Pekerjaan Utama</label>
                 <input 
                   required
                   type="text" 
                   value={judul}
                   onChange={(e) => setJudul(e.target.value)}
-                  placeholder="e.g. Living Room Floor"
+                  placeholder="e.g. Plafond Lantai 1"
                   className="japandi-input"
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-black/40 uppercase tracking-wider ml-1">Sub-Item Name</label>
-                <input 
-                  required
-                  type="text" 
-                  value={subItem}
-                  onChange={(e) => setSubItem(e.target.value)}
-                  placeholder="e.g. Main Area"
-                  className="japandi-input"
-                />
+              <div className="space-y-4">
+                <div 
+                  onClick={() => setUseSubItem(!useSubItem)}
+                  className="flex items-center gap-2 cursor-pointer group"
+                >
+                  <div className={`w-4 h-4 border border-black/20 flex items-center justify-center transition-all ${useSubItem ? 'bg-[#A3FF33] border-[#A3FF33]' : 'bg-white'}`}>
+                    {useSubItem && <Plus size={10} className="text-black" />}
+                  </div>
+                  <span className="text-[10px] font-bold text-black/60 uppercase tracking-wider group-hover:text-black transition-colors">Tambah Sub-Item</span>
+                </div>
+
+                {useSubItem && (
+                  <motion.div 
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    className="space-y-1.5 overflow-hidden"
+                  >
+                    <label className="text-[10px] font-bold text-black/40 uppercase tracking-wider ml-1">Nama Sub-Item</label>
+                    <input 
+                      required={useSubItem}
+                      type="text" 
+                      value={subItem}
+                      onChange={(e) => setSubItem(e.target.value)}
+                      placeholder="e.g. Kamar A"
+                      className="japandi-input"
+                    />
+                  </motion.div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -330,12 +392,12 @@ export default function App() {
                   className={`p-4 rounded-none cursor-pointer transition-all flex items-center justify-between ${isVoid ? 'bg-red-50' : 'bg-[#F8F9FA] hover:bg-black/5'}`}
                 >
                   <div className="flex items-center gap-3">
-                    <div className={`w-8 h-8 rounded-none flex items-center justify-center ${isVoid ? 'bg-red-500 text-white' : 'bg-[#CCFF00] text-black'}`}>
+                    <div className={`w-8 h-8 rounded-none flex items-center justify-center ${isVoid ? 'bg-red-500 text-white' : 'bg-[#A3FF33] text-black'}`}>
                       {isVoid ? <MinusCircle size={16} /> : <PlusCircle size={16} />}
                     </div>
                     <div>
-                      <p className={`text-[11px] font-bold ${isVoid ? 'text-red-600' : 'text-black'}`}>Void / Deduction</p>
-                      <p className="text-[9px] text-black/30 font-medium">Subtract from total area</p>
+                      <p className={`text-[11px] font-bold ${isVoid ? 'text-red-600' : 'text-black'}`}>Void / Pengurang</p>
+                      <p className="text-[9px] text-black/30 font-medium">Kurangi dari total luasan</p>
                     </div>
                   </div>
                   <div className={`w-4 h-4 rounded-none border transition-all flex items-center justify-center ${isVoid ? 'border-red-500 bg-red-500' : 'border-black/10'}`}>
@@ -344,7 +406,7 @@ export default function App() {
                 </div>
               )}
 
-              <button type="submit" className="japandi-button w-full py-3 bg-[#CCFF00] text-black hover:bg-[#b8e600]">
+              <button type="submit" className="japandi-button w-full py-3 bg-[#A3FF33] text-black hover:bg-[#92e62e]">
                 Add to Registry
               </button>
             </form>
@@ -352,10 +414,28 @@ export default function App() {
 
           {/* Tab Total Display */}
           <div className="japandi-card p-6 bg-[#333333] text-white">
-            <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-2">Total {activeTab} Accumulation</p>
+            <div className="flex justify-between items-center mb-6">
+              <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Waste Factor Control</p>
+              <span className="text-[10px] font-black bg-[#A3FF33] text-black px-2 py-0.5">{wasteFactor}%</span>
+            </div>
+            <div className="relative w-full mb-8">
+              <input 
+                type="range" 
+                min="0" 
+                max="20" 
+                value={wasteFactor}
+                onChange={(e) => setWasteFactor(parseInt(e.target.value))}
+                className="w-full h-1.5 bg-[#A3FF33]/20 appearance-none cursor-pointer accent-[#A3FF33] rounded-none"
+                style={{
+                  backgroundImage: `linear-gradient(to right, #A3FF33 ${wasteFactor * 5}%, transparent ${wasteFactor * 5}%)`
+                }}
+              />
+            </div>
+            
+            <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-2">Total {activeTab} (+Waste)</p>
             <div className="flex items-baseline gap-2">
-              <span className="text-4xl font-extrabold tracking-tighter text-[#CCFF00]">
-                {calculateTabTotal(activeTab).toFixed(3)}
+              <span className="text-4xl font-extrabold tracking-tighter text-[#A3FF33]">
+                {calculateTabTotal(activeTab).toFixed(2)}
               </span>
               <span className="text-sm font-bold text-white/50 italic">
                 {activeTab === 'VOLUME' ? 'm³' : activeTab === 'LUAS' ? 'm²' : 'm¹'}
@@ -401,24 +481,24 @@ export default function App() {
                       >
                         <div className="flex items-center justify-between mb-4">
                           <div className="flex items-center gap-3">
-                            <div className="w-1 h-4 bg-[#CCFF00] rounded-none" />
+                            <div className="w-1 h-4 bg-[#A3FF33] rounded-none" />
                             <h3 className="text-sm font-bold tracking-tight">{title}</h3>
                           </div>
                           <div className="text-[10px] font-bold text-black/30">
-                            Group Total: <span className="text-black ml-1">{calculateGroupTotal(subItems).toFixed(3)}</span>
+                            Group Total (+Waste): <span className="text-black ml-1 font-black">{calculateGroupTotal(subItems).toFixed(2)}</span>
                           </div>
                         </div>
                         
                         <div className="space-y-2">
                           {subItems.map((item) => (
-                            <div key={item.id} className="bg-[#F8F9FA] p-4 rounded-none flex items-center justify-between hover:bg-white transition-all border border-transparent hover:border-[#CCFF00]/40">
+                            <div key={item.id} className="bg-[#F8F9FA] p-4 rounded-none flex items-center justify-between hover:bg-white transition-all border border-transparent hover:border-[#A3FF33]/40">
                               <div className="flex items-center gap-4">
                                 <div className={`w-8 h-8 rounded-none flex items-center justify-center ${item.isVoid ? 'bg-red-100 text-red-500' : 'bg-white text-black/20 border border-black/5'}`}>
                                   {item.isVoid ? <MinusCircle size={16} /> : <Box size={16} />}
                                 </div>
                                 <div>
                                   <p className={`text-xs font-bold ${item.isVoid ? 'text-red-600' : 'text-black'}`}>
-                                    {item.nama}
+                                    {item.showSubItem ? `${title} - ${item.nama}` : title}
                                     {item.isVoid && <span className="ml-2 text-[8px] bg-red-500 text-white px-1.5 py-0.5 rounded-none font-black uppercase">Void</span>}
                                   </p>
                                   <p className="text-[9px] text-black/30 font-medium mt-0.5">
@@ -429,7 +509,7 @@ export default function App() {
                               <div className="flex items-center gap-6">
                                 <div className="text-right">
                                   <p className={`text-xs font-bold ${item.isVoid ? 'text-red-600' : 'text-black'}`}>
-                                    {item.hasil.toFixed(3)}
+                                    {item.hasil.toFixed(2)}
                                     <span className="text-[9px] ml-1 text-black/30 uppercase">
                                       {activeTab === 'VOLUME' ? 'm³' : activeTab === 'LUAS' ? 'm²' : 'm¹'}
                                     </span>
@@ -455,9 +535,9 @@ export default function App() {
         </div>
       </main>
 
-      <footer className="max-w-7xl mx-auto p-8 text-center border-t border-[#CCFF00] mt-8">
+      <footer className="max-w-7xl mx-auto p-8 text-center border-t border-[#A3FF33] mt-8">
         <p className="text-[9px] font-bold text-black/10 uppercase tracking-[1.5em]">
-          RENOVKI DIMENSION
+          NEON-CALC CONSTRUCTION V4
         </p>
       </footer>
     </div>
